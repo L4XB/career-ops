@@ -38,17 +38,50 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
+import { isIP } from 'net';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import * as yaml from 'js-yaml';
 
 import { fetchJson as defaultFetchJson, fetchTextHead as defaultFetchText, makeHttpCtx } from './providers/_http.mjs';
+import { isBlockedAddress } from './providers/_ip-guard.mjs';
 
 // The portal probes are the one place that keeps following redirects: they hit
-// the ATS vendors' own hosts (a moved board answers with a 3xx that is the
-// signal), and `_http.mjs` now refuses redirects by default for provider
-// fetches (#4079). Opting in here keeps the probe results as they were.
-const followRedirects = (fetchFn) => (url, opts = {}) => fetchFn(url, { redirect: 'follow', ...opts });
+// the ATS vendors' own hosts, and a moved board answers with a 3xx. `_http.mjs`
+// refuses redirects by default (#4079), so the probes follow them here, one hop
+// at a time under redirect:'manual', and each hop is checked like the first
+// request. A hostname is checked where it resolves (providers/_ip-guard.mjs),
+// but a literal address is dialled without a lookup, so it is checked here.
+const MAX_PROBE_REDIRECTS = 5;
+
+/** Where a refused 3xx points, or null when the probe must not go there. */
+function probeRedirectTarget(err, from) {
+  const status = err?.status;
+  if (typeof status !== 'number' || status < 300 || status >= 400 || !err.location) return null;
+  let next;
+  try {
+    next = new URL(err.location, from);
+  } catch {
+    return null;
+  }
+  if (next.protocol !== 'https:' && next.protocol !== 'http:') return null;
+  const host = next.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(host) && isBlockedAddress(host)) return null;
+  return next.href;
+}
+
+const followRedirects = (fetchFn) => async (url, opts = {}) => {
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    try {
+      return await fetchFn(current, { ...opts, redirect: 'manual' });
+    } catch (err) {
+      const next = hop < MAX_PROBE_REDIRECTS ? probeRedirectTarget(err, current) : null;
+      if (next === null) throw err;
+      current = next;
+    }
+  }
+};
 const probeFetchJson = followRedirects(defaultFetchJson);
 const probeFetchText = followRedirects(defaultFetchText);
 import { decodeEntities } from './providers/_html-entities.mjs';
