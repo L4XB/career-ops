@@ -66,6 +66,8 @@ for (const location of [
   'http://169.254.169.254/latest/meta-data/',
   'http://127.0.0.1:8080/',
   'http://[::1]/',
+  'http://[::ffff:127.0.0.1]/',
+  'http://[::ffff:a9fe:a9fe]/',
   'http://2130706433/',
   'file:///etc/passwd',
 ]) {
